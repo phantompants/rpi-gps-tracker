@@ -14,3 +14,6 @@ tools/
 
 # Pi-side config backups
 .backup/
+
+# Offline map (pi_setup/offline_map.sh), ~0.9 GB
+tiles/

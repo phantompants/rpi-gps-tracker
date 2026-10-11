@@ -63,6 +63,11 @@ sudo reboot
 - **LCD**: `pi_setup/lcd35-fbtft.dts` drives the LCD35/tft35a panel with the fbtft `fb_ili9486` driver and the tft35a init sequence. The KMS `ili9486` driver (`lcd35-drm.dts`) left this panel white, so it isn't used. fbtft gives a plain framebuffer that the desktop can't draw on, so the Pi boots to the console and the `gps-kiosk` service runs Xorg on `/dev/fb0` with Chromium full screen (`pi_setup/lcd_kiosk_x.sh`). To flip it 180°, change `rotate=270` to `rotate=90` in `/boot/firmware/config.txt` and the touch `CalibrationMatrix` in `/etc/X11/xorg.conf.d/99-lcd35.conf` to `"0 -1 1 1 0 0 0 0 1"`, then reboot.
 - **Finding the Pi**: it advertises `gps4rpi.local` (mDNS), so the CYD, a phone or a laptop on the GL.iNet can reach it without knowing its IP: `http://gps4rpi.local:8000`.
 - **GPS vs M5Stick**: gpsd reads the u-blox through `/dev/serial/by-id`; the app picks the M5Stick by the same means, because ttyACM0/1 swap between boots.
+- **No internet needed**: Leaflet and the offline map (`tiles/route.pmtiles`, ~0.9 GB, from `pi_setup/offline_map.sh`) are served by the Pi. When online map images fail, the map switches to the offline map (📴) and switches back once a minute's check finds the internet again.
+- **Clock**: the Pi has no RTC; chrony takes the time from the GPS through gpsd (shared memory unit 0) when there's no internet, and fake-hwclock restores the last known time at boot (`pi_setup/system_extras.sh`). The hardware watchdog reboots the Pi if it locks up.
+- **Drive backup**: `pi_setup/log_backup.sh` copies `logs/` to Google Drive (`JP226-GPS-Logs/<hostname>`) 10 minutes after boot and every 3 hours with rclone. LOGS on the screen shows the last backup and the next one.
+- **Alerts**: a banner over the map shows when the GPS or M5Stick stops sending (a loose USB plug), when the CPU runs hot, and when the tracker service stops answering. On the Pi there's no simulation fallback, so a missing sensor never shows made-up data; stale IMU readings are logged as blanks.
+- **Shutdown**: ⏻ on the LCD (with a tick-box confirm), 5 quick taps anywhere (10 s countdown with CANCEL), or automatically after 60 s at 85 °C. CSV logs include `cpu_temp_c`.
 
 The steps below are the original setup for older Pi OS releases.
 

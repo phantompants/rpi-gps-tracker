@@ -608,3 +608,135 @@ body, html {
     .remote .snr-col { width: 34px; flex-basis: 34px; }
     .remote .snr-track { width: 20px; height: 90px; }
 }
+
+/* Shutdown: power button on the Pi LCD only, confirm dialog with a tick box */
+.remote .lcd-only { display: none; }
+
+.btn-action.danger {
+    background: rgba(255, 51, 102, 0.15);
+    color: var(--accent-red);
+    border: 1px solid rgba(255, 51, 102, 0.45);
+}
+
+.btn-action.danger:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+#powerBtn {
+    font-size: 1rem;
+    padding: 8px 12px;
+}
+
+.shutdown-card {
+    max-width: 360px;
+    text-align: center;
+}
+
+.shutdown-note {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin: 4px 0 10px;
+}
+
+/* Big touch target: the whole row toggles the box */
+.confirm-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.confirm-check input {
+    width: 26px;
+    height: 26px;
+    accent-color: var(--accent-red);
+}
+
+.shutdown-buttons {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.shutdown-buttons .btn-action {
+    flex: 1;
+    justify-content: center;
+    padding: 12px;
+}
+
+/* Brief message over the map, e.g. "No GPS fix yet" */
+.map-toast {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    z-index: 1000;
+    background: var(--card-bg);
+    border: 1px solid var(--accent-gold);
+    color: var(--accent-gold);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    pointer-events: none;
+}
+
+/* 5-tap shutdown countdown */
+.countdown {
+    font-size: 3rem;
+    font-weight: 800;
+    color: var(--accent-red);
+    line-height: 1.1;
+}
+
+.btn-action.cancel-big {
+    width: 100%;
+    justify-content: center;
+    padding: 16px;
+    font-size: 1rem;
+}
+
+/* Alerts over the map: one line per problem, gold = warning, red = needs action now */
+.alert-banner {
+    position: absolute;
+    left: 50%;
+    top: 8px;
+    transform: translateX(-50%);
+    z-index: 1000;
+    background: var(--card-bg);
+    border: 1px solid var(--accent-gold);
+    color: var(--accent-gold);
+    border-radius: 8px;
+    padding: 5px 12px;
+    font-size: 0.75rem;
+    font-weight: 800;
+    white-space: nowrap;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.alert-banner.critical {
+    border-color: var(--accent-red);
+}
+
+.alert-banner .critical {
+    color: var(--accent-red);
+}
+
+/* Google Drive backup line in the LOGS window */
+.backup-status {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin: 4px 0 8px;
+}
+
+.backup-status.ok { color: var(--accent-green); }
+.backup-status.warn { color: var(--accent-gold); }

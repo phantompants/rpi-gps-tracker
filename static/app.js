@@ -1,11 +1,14 @@
 // RPi 3 4WD GPS & IMU Tracker Frontend
 let map, marker, trackPolyline;
 let autoCenter = true;
+let gpsFix = null;  // last real GPS position (null until the first fix)
 let speedUnit = "KMH";
 let trackPoints = [];
 
 document.addEventListener("DOMContentLoaded", () => {
     initMap();
+    updateAutoCenterButton();
+    initTapShutdown();
     startTelemetryLoop();
     initHistory();
     if (location.hash === "#sats") toggleSatModal();  // bookmarkable Satellites page
@@ -32,6 +35,13 @@ const freeMapLayers = [
         icon: "🏔️",
         url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
         options: { maxZoom: 18 }
+    },
+    {
+        // Vector map stored on the Pi (pi_setup/offline_map.sh): works with no internet
+        name: "Offline",
+        icon: "📴",
+        offline: true,
+        url: "/tiles/route.pmtiles"
     }
 ];
 
@@ -40,6 +50,14 @@ function initMap() {
         zoomControl: false,
         attributionControl: false
     }).setView([-25.8989, 137.9892], 14); // Outback Australia default view
+
+    // Panning by hand stops the map following the GPS; 🎯 brings it back
+    map.on("dragstart", () => {
+        if (autoCenter) {
+            autoCenter = false;
+            updateAutoCenterButton();
+        }
+    });
 
     // Initialize with first free map layer
     setMapLayer(0);
@@ -68,16 +86,57 @@ function setMapLayer(index) {
     }
     currentLayerIndex = index;
     const layerInfo = freeMapLayers[index];
-    currentTileLayer = L.tileLayer(layerInfo.url, layerInfo.options).addTo(map);
-    
+    if (layerInfo.offline) {
+        currentTileLayer = protomapsL.leafletLayer({ url: layerInfo.url, flavor: "dark", lang: "en", maxDataZoom: 15 }).addTo(map);
+    } else {
+        onlineTileErrors = 0;
+        currentTileLayer = L.tileLayer(layerInfo.url, layerInfo.options).addTo(map);
+        currentTileLayer.on("tileload", () => { onlineTileErrors = 0; });
+        currentTileLayer.on("tileerror", onOnlineTileError);
+    }
+
     const btn = document.getElementById("mapTypeBtn");
     if (btn) btn.textContent = layerInfo.icon;
 }
 
 function cycleMapLayer() {
+    autoOffline = false;  // picking a map by hand turns off the automatic switch back
     const nextIndex = (currentLayerIndex + 1) % freeMapLayers.length;
     setMapLayer(nextIndex);
 }
+
+// No internet (Starlink down or stowed): online map images fail, so switch to the offline map,
+// then check once a minute whether the online map is reachable again and switch back.
+const OFFLINE_INDEX = freeMapLayers.findIndex(l => l.offline);
+const TILE_ERRORS_BEFORE_OFFLINE = 4;
+let onlineTileErrors = 0;
+let autoOffline = false;        // true while showing the offline map because the internet dropped
+let onlineIndexBeforeAuto = 0;
+
+function onOnlineTileError() {
+    onlineTileErrors += 1;
+    if (onlineTileErrors < TILE_ERRORS_BEFORE_OFFLINE || autoOffline) return;
+    onlineIndexBeforeAuto = currentLayerIndex;
+    autoOffline = true;
+    setMapLayer(OFFLINE_INDEX);
+    showMapToast("No internet: offline map");
+}
+
+setInterval(() => {
+    if (!autoOffline) return;
+    // Load one online tile for the current view; if it arrives, go back to the online map
+    const layer = freeMapLayers[onlineIndexBeforeAuto];
+    const z = Math.min(map.getZoom(), 15);
+    const p = map.project(map.getCenter(), z).divideBy(256).floor();
+    const probe = new Image();
+    probe.onload = () => {
+        if (!autoOffline) return;
+        autoOffline = false;
+        setMapLayer(onlineIndexBeforeAuto);
+        showMapToast("Internet back: online map");
+    };
+    probe.src = L.Util.template(layer.url, { s: "a", z, x: p.x, y: p.y }) + `?probe=${Date.now()}`;
+}, 60000);
 
 function startTelemetryLoop() {
     fetchTelemetry();
@@ -89,8 +148,11 @@ async function fetchTelemetry() {
         const response = await fetch("/api/gps");
         const data = await response.json();
         updateUI(data);
+        serviceFailures = 0;
     } catch (err) {
         console.warn("Telemetry fetch error:", err);
+        serviceFailures += 1;
+        if (serviceFailures >= 3) showAlerts([{ text: "⚠️ Tracker service not responding", critical: true }]);
     }
 }
 
@@ -122,6 +184,8 @@ function updateUI(data) {
     document.getElementById("latLonDisplay").textContent = `Lat: ${data.lat.toFixed(6)} | Lon: ${data.lon.toFixed(6)}`;
     document.getElementById("roughnessDisplay").textContent = `Vibration Index: ${data.roughness.toFixed(2)} | Log: ${data.current_log_file || 'Active'}`;
 
+    showAlerts(collectAlerts(data));
+
     // Log Counter
     document.getElementById("pointsLogged").textContent = `${data.points_logged_today} rows logged today`;
     document.getElementById("modeTag").textContent = data.mode;
@@ -129,6 +193,7 @@ function updateUI(data) {
     // Map Position Update
     if (data.lat !== 0 && data.lon !== 0) {
         const newLatLng = [data.lat, data.lon];
+        gpsFix = newLatLng;
         marker.setLatLng(newLatLng);
 
         if (autoCenter) {
@@ -380,15 +445,68 @@ function updateAutoCenterButton() {
     }
 }
 
+// Centre on the GPS position and follow it again
 function recenterMap() {
-    const currentPos = marker.getLatLng();
-    map.setView(currentPos, 16);
+    if (!gpsFix) {
+        showMapToast("No GPS fix yet");
+        return;
+    }
+    autoCenter = true;
+    updateAutoCenterButton();
+    map.setView(gpsFix, Math.max(map.getZoom(), 16));
+}
+
+let toastTimer = null;
+function showMapToast(text) {
+    let toast = document.getElementById("mapToast");
+    if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "mapToast";
+        toast.className = "map-toast";
+        document.querySelector(".map-container").appendChild(toast);
+    }
+    toast.textContent = text;
+    toast.style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.style.display = "none"; }, 2500);
+}
+
+// Shutdown dialog: SHUT DOWN stays disabled until the tick box is ticked
+function toggleShutdownModal() {
+    const modal = document.getElementById("shutdownModal");
+    const opening = modal.style.display === "none";
+    document.getElementById("shutdownConfirm").checked = false;
+    updateShutdownButton();
+    modal.style.display = opening ? "flex" : "none";
+}
+
+function updateShutdownButton() {
+    document.getElementById("shutdownGo").disabled = !document.getElementById("shutdownConfirm").checked;
+}
+
+async function shutdownPi() {
+    if (!document.getElementById("shutdownConfirm").checked) return;
+    const note = document.getElementById("shutdownNote");
+    try {
+        const res = await fetch("/api/system/shutdown", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirm: true })
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || res.status);
+        note.textContent = "Shutting down. Wait for the Pi's green light to stop flashing before removing power.";
+        document.querySelector("#shutdownModal .confirm-check").style.display = "none";
+        document.querySelector("#shutdownModal .shutdown-buttons").style.display = "none";
+    } catch (err) {
+        note.textContent = `Shutdown failed: ${err.message}`;
+    }
 }
 
 async function toggleLogsModal() {
     const modal = document.getElementById("logsModal");
     if (modal.style.display === "none") {
         modal.style.display = "flex";
+        loadBackupStatus();
         await loadDailyLogsList();
     } else {
         modal.style.display = "none";
@@ -429,5 +547,144 @@ async function loadDailyLogsList() {
         container.innerHTML = html;
     } catch (e) {
         container.innerHTML = "<p>Error loading log list.</p>";
+    }
+}
+
+// Alerts: a sensor that stops sending (a USB plug shaken loose), overheating, shutdown.
+// GPS "no data" means gpsd hears nothing at all; searching for satellites is not an alert.
+const GPS_SILENT_S = 15;
+const IMU_SILENT_S = 10;
+const ALERT_GRACE_MS = 10000;  // sensors take a few seconds to report after the page or service starts
+const pageLoadedAt = Date.now();
+let serviceFailures = 0;
+
+function collectAlerts(data) {
+    const alerts = [];
+    if (data.shutting_down) return [{ text: "⏻ Shutting down", critical: true }];
+    if (data.overheat_shutdown_in != null) {
+        alerts.push({ text: `🔥 CPU ${Math.round(data.cpu_temp)}°C: overheat shutdown in ${data.overheat_shutdown_in}s`, critical: true });
+    } else if (data.overheat_warn) {
+        alerts.push({ text: `🌡️ CPU ${Math.round(data.cpu_temp)}°C: running hot` });
+    }
+    if (Date.now() - pageLoadedAt > ALERT_GRACE_MS && data.mode !== "Simulation") {
+        if (data.gps_data_age_s == null || data.gps_data_age_s > GPS_SILENT_S) {
+            alerts.push({ text: "📡 GPS: no data, check its USB plug", critical: true });
+        }
+        if (data.imu_data_age_s == null || data.imu_data_age_s > IMU_SILENT_S) {
+            alerts.push({ text: "📳 IMU: no data, check the M5Stick" });
+        }
+    }
+    return alerts;
+}
+
+function showAlerts(alerts) {
+    const banner = document.getElementById("alertBanner");
+    if (!alerts.length) {
+        banner.style.display = "none";
+        return;
+    }
+    banner.replaceChildren(...alerts.map(a => {
+        const line = document.createElement("div");
+        line.textContent = a.text;
+        if (a.critical) line.className = "critical";
+        return line;
+    }));
+    banner.classList.toggle("critical", alerts.some(a => a.critical));
+    banner.style.display = "flex";
+}
+
+// 5 quick taps anywhere on the Pi's LCD start a 10 s shutdown countdown with a CANCEL button.
+// The countdown is there because bumps can register as touches on the resistive screen.
+const TAP_COUNT = 5;
+const TAP_WINDOW_MS = 3000;
+const TAP_COUNTDOWN_S = 10;
+let tapTimes = [];
+let tapCountdownTimer = null;
+
+function initTapShutdown() {
+    if (document.documentElement.classList.contains("remote")) return;  // LCD only
+    document.addEventListener("pointerdown", () => {
+        if (tapCountdownTimer || document.getElementById("shutdownModal").style.display !== "none") return;
+        const now = Date.now();
+        tapTimes = tapTimes.filter(t => now - t < TAP_WINDOW_MS);
+        tapTimes.push(now);
+        if (tapTimes.length >= TAP_COUNT) {
+            tapTimes = [];
+            startTapShutdown();
+        }
+    }, true);
+}
+
+function startTapShutdown() {
+    let left = TAP_COUNTDOWN_S;
+    const count = document.getElementById("tapCountdown");
+    count.textContent = left;
+    document.getElementById("tapShutdownNote").textContent = "5 taps detected. Tap CANCEL to keep running.";
+    document.getElementById("tapShutdownCancel").style.display = "";
+    document.getElementById("tapShutdownModal").style.display = "flex";
+    tapCountdownTimer = setInterval(async () => {
+        left -= 1;
+        count.textContent = left;
+        if (left > 0) return;
+        clearInterval(tapCountdownTimer);
+        const note = document.getElementById("tapShutdownNote");
+        document.getElementById("tapShutdownCancel").style.display = "none";
+        try {
+            const res = await fetch("/api/system/shutdown", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirm: true, source: "taps" })
+            });
+            if (!res.ok) throw new Error((await res.json()).detail || res.status);
+            note.textContent = "Shutting down. Wait for the Pi's green light to stop flashing before removing power.";
+        } catch (err) {
+            note.textContent = `Shutdown failed: ${err.message}`;
+            setTimeout(cancelTapShutdown, 4000);
+        }
+    }, 1000);
+}
+
+function cancelTapShutdown() {
+    clearInterval(tapCountdownTimer);
+    tapCountdownTimer = null;
+    tapTimes = [];
+    document.getElementById("tapShutdownModal").style.display = "none";
+}
+
+// Google Drive backup line in the LOGS window (from the gps-log-backup service, every 3 h)
+function timeAgo(unix) {
+    const mins = Math.round((Date.now() / 1000 - unix) / 60);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    return hours < 48 ? `${hours} h ${mins % 60} min ago` : `${Math.floor(hours / 24)} days ago`;
+}
+
+function clockTime(unix) {
+    return new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadBackupStatus() {
+    const el = document.getElementById("backupStatus");
+    el.className = "backup-status";
+    try {
+        const b = await (await fetch("/api/backup/status")).json();
+        if (!b.configured) {
+            el.textContent = "☁️ Drive backup: not set up";
+            return;
+        }
+        const next = b.next_run ? ` · next ${clockTime(b.next_run)}` : "";
+        if (b.last_result === "success") {
+            el.textContent = `☁️ Backed up to Drive ${timeAgo(b.last_success)}${next}`;
+            el.classList.add("ok");
+        } else if (b.last_run) {
+            const good = b.last_success ? `last good ${timeAgo(b.last_success)}` : "never succeeded";
+            el.textContent = `☁️ Last backup failed (no internet?), ${good}${next}`;
+            el.classList.add("warn");
+        } else {
+            el.textContent = `☁️ Drive backup: waiting for first run${next}`;
+        }
+    } catch (err) {
+        el.textContent = "☁️ Drive backup: status unavailable";
     }
 }

@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RPi 3 4WD GPS & IMU Tracker</title>
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/style.css?v=3" />
+    <!-- Leaflet is served from the Pi so the page works with no internet (only the map tiles need it) -->
+    <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4/leaflet.css" />
+    <link rel="stylesheet" href="/static/style.css?v=7" />
     <script>
         // Phones/remote browsers get the log & download bar at the top; the Pi LCD kiosk (localhost) keeps it at the bottom
         if (!["localhost", "127.0.0.1"].includes(location.hostname)) document.documentElement.classList.add("remote");
@@ -42,6 +42,9 @@
         <!-- Main Map Area -->
         <main class="map-container">
             <div id="map"></div>
+
+            <!-- Problems that need attention: sensor dropouts, overheating, service not responding -->
+            <div class="alert-banner" id="alertBanner" style="display:none;"></div>
             
             <!-- Floating Map Overlay Info -->
             <div class="coords-overlay">
@@ -57,7 +60,7 @@
             <!-- Floating Controls -->
             <div class="map-controls">
                 <button class="btn-icon" id="mapTypeBtn" onclick="cycleMapLayer()" title="Switch Map Type">🛰️</button>
-                <button class="btn-icon" id="recenterBtn" onclick="recenterMap()" title="Center Map">🎯</button>
+                <button class="btn-icon" id="recenterBtn" onclick="recenterMap()" title="Centre on GPS position and follow">🎯</button>
                 <button class="btn-icon" id="autoCenterToggle" onclick="toggleAutoCenter()" title="Lock Center">🔒</button>
             </div>
         </main>
@@ -77,6 +80,8 @@
                 <button class="btn-action secondary" id="logsBtn" onclick="toggleLogsModal()">
                     <span class="icon">💾</span> LOGS
                 </button>
+                <!-- Pi LCD only: phones and laptops on the vehicle Wi-Fi can't switch the Pi off -->
+                <button class="btn-action danger lcd-only" id="powerBtn" onclick="toggleShutdownModal()" title="Shut down the Pi">⏻</button>
             </div>
 
             <div class="mode-tag" id="modeTag">Hardware</div>
@@ -87,9 +92,36 @@
     <div class="modal-overlay" id="logsModal" style="display:none;">
         <div class="modal-card">
             <h3>📅 Telemetry Logs (last 10 days)</h3>
+            <div class="backup-status" id="backupStatus"></div>
             <a class="btn-action download-all" href="/api/logs/download-all" download>⬇️ DOWNLOAD ALL LOGS (.ZIP)</a>
             <div class="logs-list" id="logsList">Loading...</div>
             <button class="btn-action primary" onclick="toggleLogsModal()">CLOSE</button>
+        </div>
+    </div>
+
+    <!-- Shutdown Modal: the tick box must be ticked before SHUT DOWN works -->
+    <div class="modal-overlay" id="shutdownModal" style="display:none;">
+        <div class="modal-card shutdown-card">
+            <h3>⏻ Shut down the Pi?</h3>
+            <p class="shutdown-note" id="shutdownNote">Logging stops until the Pi is powered on again.</p>
+            <label class="confirm-check">
+                <input type="checkbox" id="shutdownConfirm" onchange="updateShutdownButton()">
+                <span>Yes, shut down now</span>
+            </label>
+            <div class="shutdown-buttons">
+                <button class="btn-action secondary" id="shutdownCancel" onclick="toggleShutdownModal()">CANCEL</button>
+                <button class="btn-action danger" id="shutdownGo" onclick="shutdownPi()" disabled>SHUT DOWN</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5 quick taps anywhere on the LCD: shut down after a countdown unless cancelled -->
+    <div class="modal-overlay" id="tapShutdownModal" style="display:none;">
+        <div class="modal-card shutdown-card">
+            <h3>⏻ Shutting down</h3>
+            <div class="countdown" id="tapCountdown">10</div>
+            <p class="shutdown-note" id="tapShutdownNote">5 taps detected. Tap CANCEL to keep running.</p>
+            <button class="btn-action secondary cancel-big" id="tapShutdownCancel" onclick="cancelTapShutdown()">CANCEL</button>
         </div>
     </div>
 
@@ -118,7 +150,9 @@
     </div>
 
     <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
+    <!-- Draws the offline vector map (tiles/route.pmtiles) -->
+    <script src="/static/vendor/protomaps-leaflet-5.1.0/protomaps-leaflet.js"></script>
+    <script src="/static/app.js?v=7"></script>
 </body>
 </html>

@@ -11,7 +11,8 @@ import zipfile
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, HTTPException
+import subprocess
+from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
 import uvicorn
@@ -51,6 +52,12 @@ telemetry_state = {
     "roughness": 0.0,     # Road corrugation index (vibration RMS)
     "imu_connected": False
 }
+
+# Simulation (fake GPS + IMU) is for trying the app on a PC. On the Pi a missing sensor must show as
+# missing, not as made-up data on the map and in the logs, so it's off on Linux unless GPS_SIMULATION=1.
+SIMULATION_ALLOWED = os.environ.get("GPS_SIMULATION", "0" if sys.platform.startswith("linux") else "1") == "1"
+IMU_STALE_SECS = 5.0                         # older IMU readings are logged as blanks, not repeated
+sensor_seen = {"gps": None, "imu": None}     # time.time() of the last message from each sensor
 
 # Per-satellite sky view (from gpsd SKY messages) for the Satellites page
 sky_state = {
@@ -115,7 +122,7 @@ class M5StickIMUThread(threading.Thread):
             if not connected:
                 connected = self.try_udp()
 
-            if not connected:
+            if not connected and SIMULATION_ALLOWED:
                 # Simulate IMU movement if not connected to hardware
                 self.simulate_imu()
 
@@ -156,6 +163,8 @@ class M5StickIMUThread(threading.Thread):
             return True
         except Exception as e:
             print(f"[IMU] Serial error: {type(e).__name__}: {e}")
+            with DATA_LOCK:
+                telemetry_state["imu_connected"] = False
             return False
 
     def try_udp(self) -> bool:
@@ -206,6 +215,7 @@ class M5StickIMUThread(threading.Thread):
                 telemetry_state["g_total"] = round(g_total, 2)
                 telemetry_state["roughness"] = round(roughness, 3)
                 telemetry_state["imu_connected"] = True
+                sensor_seen["imu"] = time.time()
         except Exception:
             pass
 
@@ -249,11 +259,15 @@ class GPSReaderThread(threading.Thread):
             if not connected:
                 connected = self.try_connect_serial()
 
-            if not connected:
+            if not connected and SIMULATION_ALLOWED:
                 with DATA_LOCK:
                     telemetry_state["mode"] = "Simulation"
                     telemetry_state["status"] = "Simulation Active"
                 self.run_simulation()
+            elif not connected:
+                with DATA_LOCK:
+                    telemetry_state["mode"] = "No GPS"
+                    telemetry_state["status"] = "No GPS data"
             
             time.sleep(2)
 
@@ -290,6 +304,7 @@ class GPSReaderThread(threading.Thread):
             
             with DATA_LOCK:
                 if msg_type == "TPV":
+                    sensor_seen["gps"] = time.time()
                     mode = msg.get("mode", 0)
                     telemetry_state["fix_quality"] = mode
                     if mode >= 2:
@@ -345,6 +360,9 @@ class GPSReaderThread(threading.Thread):
 
             while self.running:
                 line = ser.readline().decode('ascii', errors='ignore')
+                if line.startswith('$'):
+                    with DATA_LOCK:
+                        sensor_seen["gps"] = time.time()
                 if line.startswith('$GPRMC') or line.startswith('$GNRMC'):
                     self.parse_nmea_rmc(line)
             ser.close()
@@ -465,9 +483,10 @@ def log_sort_key(name: str):
     return (len(suffix), suffix, name)
 
 
-def session_log_path(day: str) -> str:
-    """CSV path this boot writes to for the given UTC day, creating the next lettered file if needed."""
-    if day in _session_files:
+def session_log_path(day: str, fresh: bool = False) -> str:
+    """CSV path this boot writes to for the given UTC day, creating the next lettered file if needed.
+    fresh=True moves this boot on to a new lettered file (used when the CSV columns change)."""
+    if day in _session_files and not fresh:
         return _session_files[day]
     daily_dir = os.path.join(LOG_DIR, day)
     os.makedirs(daily_dir, exist_ok=True)
@@ -477,7 +496,7 @@ def session_log_path(day: str) -> str:
             sessions = json.load(f)
     except (OSError, ValueError):
         sessions = {}
-    name = sessions.get(BOOT_ID)
+    name = None if fresh else sessions.get(BOOT_ID)
     if not name:
         taken = set(os.listdir(daily_dir)) | set(sessions.values())
         index = 0
@@ -493,6 +512,25 @@ def session_log_path(day: str) -> str:
         print(f"[LOGGER] This boot logs to {day}/{name}")
     _session_files[day] = os.path.join(daily_dir, name)
     return _session_files[day]
+
+LOG_HEADERS = [
+    "timestamp", "lat", "lon", "alt_m", "speed_kmh", "heading_deg",
+    "satellites", "hdop", "vdop",
+    "acc_x_g", "acc_y_g", "acc_z_g",
+    "gyro_x_dps", "gyro_y_dps", "gyro_z_dps",
+    "pitch_deg", "roll_deg", "g_total", "roughness_index",
+    "cpu_temp_c",
+]
+_checked_headers = set()
+
+
+def _csv_header(path: str) -> List[str]:
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            return next(csv.reader(f), [])
+    except OSError:
+        return []
+
 
 # Daily Auto-Rolling Logger Function
 def log_to_daily_file():
@@ -513,15 +551,19 @@ def log_to_daily_file():
 
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     csv_path = session_log_path(today_str)
+    if csv_path not in _checked_headers:
+        # A service restart appends to this boot's file; if it was written with other columns, start a new one
+        if os.path.exists(csv_path) and _csv_header(csv_path) != LOG_HEADERS:
+            csv_path = session_log_path(today_str, fresh=True)
+        _checked_headers.add(csv_path)
     file_exists = os.path.exists(csv_path)
+    headers = LOG_HEADERS
 
-    headers = [
-        "timestamp", "lat", "lon", "alt_m", "speed_kmh", "heading_deg",
-        "satellites", "hdop", "vdop",
-        "acc_x_g", "acc_y_g", "acc_z_g",
-        "gyro_x_dps", "gyro_y_dps", "gyro_z_dps",
-        "pitch_deg", "roll_deg", "g_total", "roughness_index"
-    ]
+    # IMU fields are left blank once the M5Stick goes quiet, so old readings aren't logged as new
+    imu_fresh = sensor_seen["imu"] is not None and now - sensor_seen["imu"] < IMU_STALE_SECS
+
+    def imu(key):
+        return telemetry_state[key] if imu_fresh else ""
 
     try:
         with open(csv_path, mode="a", newline="", encoding="utf-8") as f:
@@ -539,16 +581,17 @@ def log_to_daily_file():
                 telemetry_state["satellites"],
                 telemetry_state["hdop"],
                 telemetry_state["vdop"],
-                telemetry_state["acc_x"],
-                telemetry_state["acc_y"],
-                telemetry_state["acc_z"],
-                telemetry_state["gyro_x"],
-                telemetry_state["gyro_y"],
-                telemetry_state["gyro_z"],
-                telemetry_state["pitch"],
-                telemetry_state["roll"],
-                telemetry_state["g_total"],
-                telemetry_state["roughness"]
+                imu("acc_x"),
+                imu("acc_y"),
+                imu("acc_z"),
+                imu("gyro_x"),
+                imu("gyro_y"),
+                imu("gyro_z"),
+                imu("pitch"),
+                imu("roll"),
+                imu("g_total"),
+                imu("roughness"),
+                "" if system_state["cpu_temp"] is None else system_state["cpu_temp"],
             ])
             recording_state["points_logged_today"] += 1
             recording_state["current_log_file"] = csv_path
@@ -681,12 +724,82 @@ def split_segments(points: List[tuple]) -> List[List[tuple]]:
     return segments
 
 
+# Overheat protection. The Pi 4 throttles itself from about 80°C; if it stays at the shutdown
+# temperature for OVERHEAT_SECS it is powered off rather than left to cook in a hot cab.
+OVERHEAT_WARN_C = float(os.environ.get("OVERHEAT_WARN_C", "80"))
+OVERHEAT_SHUTDOWN_C = float(os.environ.get("OVERHEAT_SHUTDOWN_C", "85"))
+OVERHEAT_SECS = float(os.environ.get("OVERHEAT_SECS", "60"))
+CPU_TEMP_PATH = "/sys/class/thermal/thermal_zone0/temp"
+
+system_state = {
+    "cpu_temp": None,               # °C, None where there is no sensor (Windows/Mac simulation)
+    "overheat_warn": False,
+    "overheat_shutdown_in": None,   # seconds left while above the shutdown temperature
+    "shutting_down": False,
+}
+SYSTEM_LOCK = threading.Lock()
+
+
+def power_off(reason: str) -> bool:
+    """Power the Pi off once (later calls do nothing). Replies get a second to go out first;
+    systemd then stops this service cleanly, closing the day's log.
+    Needs the sudoers rule from pi_setup/setup.sh (systemctl poweroff without a password)."""
+    with SYSTEM_LOCK:
+        if system_state["shutting_down"]:
+            return False
+        system_state["shutting_down"] = True
+    print(f"[SYSTEM] Shutting down: {reason}")
+    threading.Timer(1.0, lambda: subprocess.Popen(["sudo", "-n", "/usr/bin/systemctl", "poweroff"])).start()
+    return True
+
+
+class ThermalWatchThread(threading.Thread):
+    """Reads the CPU temperature every 5 s and powers off after OVERHEAT_SECS at or above OVERHEAT_SHUTDOWN_C."""
+    def __init__(self):
+        super().__init__(daemon=True)
+
+    def run(self):
+        if not os.path.exists(CPU_TEMP_PATH):
+            print("[THERMAL] No CPU temperature sensor, overheat protection off")
+            return
+        print(f"[THERMAL] Warn at {OVERHEAT_WARN_C:.0f}°C, shut down after {OVERHEAT_SECS:.0f}s at {OVERHEAT_SHUTDOWN_C:.0f}°C")
+        hot_since = None
+        while True:
+            try:
+                with open(CPU_TEMP_PATH) as f:
+                    temp = int(f.read().strip()) / 1000.0
+            except (OSError, ValueError):
+                time.sleep(5)
+                continue
+            now = time.time()
+            if temp >= OVERHEAT_SHUTDOWN_C:
+                if hot_since is None:
+                    hot_since = now
+                    print(f"[THERMAL] {temp:.1f}°C: shutting down in {OVERHEAT_SECS:.0f}s unless it cools")
+                left = max(0.0, OVERHEAT_SECS - (now - hot_since))
+            else:
+                if hot_since is not None:
+                    print(f"[THERMAL] Cooled to {temp:.1f}°C, shutdown cancelled")
+                hot_since = None
+                left = None
+            with SYSTEM_LOCK:
+                system_state["cpu_temp"] = round(temp, 1)
+                system_state["overheat_warn"] = temp >= OVERHEAT_WARN_C
+                system_state["overheat_shutdown_in"] = None if left is None else int(left)
+            if left == 0.0:
+                power_off(f"overheat, CPU {temp:.1f}°C for {OVERHEAT_SECS:.0f}s")
+            time.sleep(5)
+
+
 # Start Threads
 imu_thread = M5StickIMUThread()
 imu_thread.start()
 
 gps_thread = GPSReaderThread()
 gps_thread.start()
+
+thermal_thread = ThermalWatchThread()
+thermal_thread.start()
 
 
 # REST API Routes
@@ -696,8 +809,17 @@ def get_telemetry():
         return {
             **telemetry_state,
             "points_logged_today": recording_state["points_logged_today"],
-            "current_log_file": os.path.basename(recording_state["current_log_file"] or "")
+            "current_log_file": os.path.basename(recording_state["current_log_file"] or ""),
+            **system_state,
+            # Seconds since each sensor last sent anything (None = not heard from since start)
+            "gps_data_age_s": sensor_age("gps"),
+            "imu_data_age_s": sensor_age("imu"),
         }
+
+
+def sensor_age(name: str) -> Optional[float]:
+    seen = sensor_seen[name]
+    return None if seen is None else round(time.time() - seen, 1)
 
 @app.get("/api/sats")
 def get_satellites():
@@ -711,6 +833,52 @@ def get_satellites():
             "visible": telemetry_state["sats_visible"],
             "satellites": list(sky_state["satellites"]),
         }
+
+@app.post("/api/system/shutdown")
+def shutdown_pi(request: Request, body: Dict[str, Any] = Body(default={})):
+    """Power off the Pi from the LCD (the confirm dialog, or the 5-tap countdown). Only the Pi itself
+    (the kiosk on localhost) may call this, so a phone or laptop on the vehicle Wi-Fi can't switch it off."""
+    if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="Shutdown is only allowed from the Pi's own screen")
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Shutdown not confirmed")
+    source = "5 taps" if body.get("source") == "taps" else "shutdown button"
+    power_off(f"requested from the LCD ({source})")
+    return {"status": "shutting down"}
+
+
+# Google Drive log backup (pi_setup/log_backup.sh): the service records each run in its state directory
+BACKUP_STATE_DIR = "/var/lib/gps-log-backup"
+
+
+@app.get("/api/backup/status")
+def backup_status():
+    def read_state(name: str) -> List[str]:
+        try:
+            with open(os.path.join(BACKUP_STATE_DIR, name)) as f:
+                return f.read().split()
+        except OSError:
+            return []
+
+    last_run = read_state("last_run")          # "<unix time> <systemd result>"
+    last_success = read_state("last_success")  # "<unix time>"
+    next_run = None
+    try:
+        # The timer counts from boot (OnBootSec/OnUnitActiveSec); list-timers gives its next run as wall-clock µs
+        out = subprocess.run(["systemctl", "list-timers", "gps-log-backup.timer", "--output=json", "--no-pager"],
+                             capture_output=True, text=True, timeout=3).stdout
+        timers = json.loads(out or "[]")
+        if timers and timers[0].get("next"):
+            next_run = int(timers[0]["next"] // 1_000_000)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return {
+        "configured": os.path.isdir(BACKUP_STATE_DIR),
+        "last_run": int(last_run[0]) if last_run else None,
+        "last_result": last_run[1] if len(last_run) > 1 else None,
+        "last_success": int(last_success[0]) if last_success else None,
+        "next_run": next_run,
+    }
 
 @app.get("/api/history")
 def get_history(since: Optional[float] = None):
@@ -839,6 +1007,11 @@ if not os.path.exists(static_dir):
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Offline map (pi_setup/offline_map.sh downloads tiles/route.pmtiles). The browser reads it in pieces
+# with HTTP range requests, which StaticFiles supports.
+tiles_dir = os.path.join(os.path.dirname(__file__), "tiles")
+app.mount("/tiles", StaticFiles(directory=tiles_dir, check_dir=False), name="tiles")
+
 # Make browsers (iOS Safari especially) revalidate the page and assets, so UI updates show on reload
 @app.middleware("http")
 async def no_cache_ui(request, call_next):
@@ -852,4 +1025,5 @@ def read_root():
     return FileResponse(os.path.join(static_dir, "index.html"))
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    # Pass the app object, not "app:app": an import string loads this file a second time and starts every thread twice
+    uvicorn.run(app, host="0.0.0.0", port=8000)
