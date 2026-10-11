@@ -1,0 +1,95 @@
+// 3.5" GPIO LCD (goodtft LCD35 / tft35a) on the fbtft fb_ili9486 driver, with the tft35a init sequence
+// (16-bit register width through the board's shift register). Gives /dev/fb0, not a DRM output.
+// Build: dtc -q -@ -I dts -O dtb -o /boot/firmware/overlays/lcd35-fbtft.dtbo lcd35-fbtft.dts
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@2 {
+		target = <&spidev1>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@3 {
+		target = <&gpio>;
+		__overlay__ {
+			lcd35_pins: lcd35_pins {
+				brcm,pins = <17 25 24>;
+				brcm,function = <0 1 1>;
+			};
+		};
+	};
+
+	fragment@4 {
+		target = <&spi0>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			lcd35: lcd35@0 {
+				compatible = "ilitek,ili9486";
+				reg = <0>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&lcd35_pins>;
+				spi-max-frequency = <16000000>;
+				rotate = <270>;
+				bgr;
+				fps = <30>;
+				buswidth = <8>;
+				regwidth = <16>;
+				reset-gpios = <&gpio 25 1>;
+				dc-gpios = <&gpio 24 0>;
+				debug = <0>;
+				init = <0x10000b0 0x00
+					0x1000011
+					0x20000ff
+					0x100003a 0x55
+					0x1000036 0x28
+					0x10000c2 0x44
+					0x10000c5 0x00 0x00 0x00 0x00
+					0x10000e0 0x0f 0x1f 0x1c 0x0c 0x0f 0x08 0x48 0x98 0x37 0x0a 0x13 0x04 0x11 0x0d 0x00
+					0x10000e1 0x0f 0x32 0x2e 0x0b 0x0d 0x05 0x47 0x75 0x37 0x06 0x10 0x03 0x24 0x20 0x00
+					0x10000e2 0x0f 0x32 0x2e 0x0b 0x0d 0x05 0x47 0x75 0x37 0x06 0x10 0x03 0x24 0x20 0x00
+					0x1000036 0x28
+					0x1000011
+					0x1000029>;
+			};
+
+			lcd35_ts: lcd35-ts@1 {
+				compatible = "ti,ads7846";
+				reg = <1>;
+				spi-max-frequency = <2000000>;
+				interrupts = <17 2>;
+				interrupt-parent = <&gpio>;
+				pendown-gpio = <&gpio 17 1>;
+				ti,x-plate-ohms = /bits/ 16 <60>;
+				ti,pressure-max = /bits/ 16 <255>;
+			};
+		};
+	};
+
+	__overrides__ {
+		speed = <&lcd35>, "spi-max-frequency:0";
+		rotate = <&lcd35>, "rotate:0";
+		fps = <&lcd35>, "fps:0";
+		swapxy = <&lcd35_ts>, "ti,swap-xy?";
+	};
+};

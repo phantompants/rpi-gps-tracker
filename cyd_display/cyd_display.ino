@@ -4,7 +4,7 @@
   - Joins the vehicle Wi-Fi (GL.iNet) and polls the Pi's API: http://<pi>:8000/api/gps and /api/sats
   - Tap the screen to cycle pages: Dashboard -> Inclinometer -> Satellites
   - First boot (or no saved Wi-Fi): creates hotspot "GPS-Display-Setup". Join it from a phone,
-    pick the vehicle Wi-Fi, enter its password and the Pi's name/IP (default gps4.local).
+    pick the vehicle Wi-Fi, enter its password and the Pi's name/IP (default gps4rpi.local).
   - Hold a finger on the screen while powering on to clear Wi-Fi settings and re-run setup.
   - RGB LED: green = live data, red = no link to the Pi, blue = Wi-Fi setup.
   - Serial (115200) commands for bench setup: i = toggle colour inversion, d = toggle display
@@ -122,7 +122,7 @@ struct Settings {
   uint8_t rotation = 1;
   uint8_t freqIndex = 0;   // index into SPI_FREQS
   uint8_t madIndex = 3;    // index into MADCTL_OPTS; 3 = this USB-C CYD as mounted in the vehicle (2 = same, rotated 180°)
-  String piHost = "gps4.local";
+  String piHost = "gps4rpi.local";
 } settings;
 
 // ---------- Live data ----------
@@ -165,9 +165,20 @@ void loadSettings() {
   settings.rotation = prefs.getUChar("rot", settings.rotation);
   settings.freqIndex = prefs.getUChar("freq", settings.freqIndex) % 4;
   settings.madIndex = prefs.getUChar("mad", settings.madIndex) % MADCTL_COUNT;
-  settings.piHost = prefs.getString("pihost", settings.piHost);
+  String savedHost = prefs.getString("pihost", settings.piHost);
+  // The Pi was rebuilt as gps4rpi: replace the old default name or a fixed IP once, so DHCP changes don't matter.
+  // After that a saved IP is kept (the "hostv" key marks the migration as done).
+  IPAddress ignored;
+  bool migrated = prefs.isKey("hostv");
+  if (migrated || (savedHost != "gps4.local" && !ignored.fromString(savedHost))) settings.piHost = savedHost;
   bool detected = prefs.isKey("st7789");
   prefs.end();
+  if (!migrated) {
+    prefs.begin("cyd", false);
+    prefs.putString("pihost", settings.piHost);
+    prefs.putUChar("hostv", 2);
+    prefs.end();
+  }
   if (!detected) settings.st7789 = detectST7789();
 }
 
@@ -560,7 +571,7 @@ void showMessage(const char* l1, const char* l2 = "", const char* l3 = "") {
 // ---------- Wi-Fi setup ----------
 // The portal runs non-blocking so the screen and serial commands keep working while it is up.
 WiFiManager wm;
-WiFiManagerParameter hostParam("pihost", "Pi hostname or IP", "gps4.local", 40);
+WiFiManagerParameter hostParam("pihost", "Pi hostname or IP", "gps4rpi.local", 40);
 bool portalActive = false;
 
 void showPortalMessage() {

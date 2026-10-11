@@ -24,7 +24,8 @@ A complete, beginner-friendly 4WD GPS & IMU tracking application designed for **
 rpi-gps-tracker/
 ├── app.py             # Python FastAPI server (GPS hardware reader + Simulation engine + API)
 ├── requirements.txt   # Python dependencies
-├── install.sh         # One-click Raspberry Pi setup & installation script
+├── install.sh         # Older installer (Pi OS before trixie)
+├── pi_setup/          # Raspberry Pi OS trixie setup: setup.sh, 3.5" LCD overlay, kiosk script
 ├── rpi_remote.py      # Run commands on the Pi over SSH from your PC
 ├── m5stick_firmware/  # Arduino sketch: M5StickC Plus2 IMU → USB serial JSON
 ├── cyd_display/       # Arduino sketch: CYD (ESP32-2432S028) Wi-Fi remote screen
@@ -50,6 +51,20 @@ rpi-gps-tracker/
 5. Click **Write** and insert the SD card into your RPi 3.
 
 ---
+
+### Raspberry Pi OS trixie (current build: `gps4rpi`)
+On Pi OS trixie (64-bit desktop) skip LCD-show and `install.sh`. One script sets up gpsd, the app service, the 3.5" LCD and the kiosk:
+```bash
+ssh jp226@gps4rpi.local
+cd ~/rpi-gps-tracker
+sudo bash pi_setup/setup.sh
+sudo reboot
+```
+- **LCD**: `pi_setup/lcd35-fbtft.dts` drives the LCD35/tft35a panel with the fbtft `fb_ili9486` driver and the tft35a init sequence. The KMS `ili9486` driver (`lcd35-drm.dts`) left this panel white, so it isn't used. fbtft gives a plain framebuffer that the desktop can't draw on, so the Pi boots to the console and the `gps-kiosk` service runs Xorg on `/dev/fb0` with Chromium full screen (`pi_setup/lcd_kiosk_x.sh`). To flip it 180°, change `rotate=270` to `rotate=90` in `/boot/firmware/config.txt` and the touch `CalibrationMatrix` in `/etc/X11/xorg.conf.d/99-lcd35.conf` to `"0 -1 1 1 0 0 0 0 1"`, then reboot.
+- **Finding the Pi**: it advertises `gps4rpi.local` (mDNS), so the CYD, a phone or a laptop on the GL.iNet can reach it without knowing its IP: `http://gps4rpi.local:8000`.
+- **GPS vs M5Stick**: gpsd reads the u-blox through `/dev/serial/by-id`; the app picks the M5Stick by the same means, because ttyACM0/1 swap between boots.
+
+The steps below are the original setup for older Pi OS releases.
 
 ### Step 2: Setting Up the 3.5-inch Touchscreen Display
 Most 3.5-inch displays (like Waveshare 3.5", KeDei, or generic LCD35) use GPIO pins and require driver installation.
@@ -145,7 +160,7 @@ A dash-mounted screen that shows live data from the Pi over the vehicle Wi-Fi. T
    arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app cyd_display
    arduino-cli upload -p COM6 --fqbn esp32:esp32:esp32:PartitionScheme=huge_app cyd_display
    ```
-2. On first boot it creates the hotspot **GPS-Display-Setup**. Join it from your phone, choose the vehicle Wi-Fi (GL.iNet), enter its password and the Pi's name (`gps4.local`) or IP.
+2. On first boot it creates the hotspot **GPS-Display-Setup**. Join it from your phone, choose the vehicle Wi-Fi (GL.iNet), enter its password and the Pi's name (`gps4rpi.local`) or IP.
 3. LED: green = live data, red = no link to the Pi, blue = Wi-Fi setup. Hold the screen while powering on to redo Wi-Fi setup.
 4. Wrong orientation or mirrored? This USB-C CYD scans natively in landscape and uses orientation option 3 (the default, for the vehicle mount; option 2 is the same view rotated 180°). To flip a mounted CYD 180°, send `m` over serial to step to the next option (2 ↔ 3 are the 180° pair). For another board, send `t` over serial (115200) to show a test pattern, then tap the screen to cycle orientation options 1–4 (saved on each tap) and send `t` again to return. Other serial commands: `i` invert colours, `f` lower SPI speed, `d` switch ILI9341/ST7789 driver, `s` status.
 
