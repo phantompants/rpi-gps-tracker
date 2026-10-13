@@ -121,6 +121,22 @@ body, html {
     border: 1px solid rgba(0, 240, 255, 0.4);
 }
 
+/* Pi health strip under the header (takes ~32 px from the map) */
+.sys-bar {
+    display: flex;
+    justify-content: space-around;
+    background: rgba(10, 14, 23, 0.95);
+    border-bottom: 1px solid var(--card-border);
+    padding: 1px 12px;
+    font-size: 1.4rem;
+    line-height: 1.2;
+    font-weight: 700;
+    color: var(--text-dim);
+    z-index: 1000;
+}
+
+.sys-bar b { color: var(--text-bright); }  /* app.js sets a green-amber-red colour by value */
+
 /* Map Container */
 .map-container {
     flex: 1;

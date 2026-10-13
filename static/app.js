@@ -48,7 +48,9 @@ const freeMapLayers = [
 function initMap() {
     map = L.map("map", {
         zoomControl: false,
-        attributionControl: false
+        attributionControl: false,
+        // On the LCD, multi-tap gestures (3 = recentre, 5 = shutdown) would otherwise zoom the map
+        doubleClickZoom: document.documentElement.classList.contains("remote")
     }).setView([-25.8989, 137.9892], 14); // Outback Australia default view
 
     // Panning by hand stops the map following the GPS; 🎯 brings it back
@@ -156,6 +158,22 @@ async function fetchTelemetry() {
     }
 }
 
+// Colour scales smoothly: green up to okAt, through amber at warnAt, to red at hotAt and above
+function setSysValue(id, value, format, okAt, warnAt, hotAt) {
+    const el = document.getElementById(id);
+    if (value === null || value === undefined) {
+        el.textContent = "--";
+        el.style.color = "";
+        return;
+    }
+    el.textContent = format(value);
+    const clamp = x => Math.min(1, Math.max(0, x));
+    const hue = value < warnAt
+        ? 130 - 90 * clamp((value - okAt) / (warnAt - okAt))   // green 130 -> amber 40
+        : 40 - 40 * clamp((value - warnAt) / (hotAt - warnAt)); // amber 40 -> red 0
+    el.style.color = `hsl(${hue}, 100%, 55%)`;
+}
+
 function updateUI(data) {
     // Speedometer
     const displaySpeed = (speedUnit === "KMH") ? data.speed : data.speed_mph;
@@ -169,6 +187,11 @@ function updateUI(data) {
 
     // IMU: G-Force
     document.getElementById("gForceValue").textContent = `${data.g_total.toFixed(1)}g`;
+
+    // Pi health strip: green / amber / red points (temp is red at the 80 °C overheat warning)
+    setSysValue("sysCpu", data.cpu_percent, v => `${Math.round(v)}%`, 30, 70, 90);
+    setSysValue("sysRam", data.ram_percent, v => `${Math.round(v)}%`, 50, 75, 90);
+    setSysValue("sysTemp", data.cpu_temp, v => `${v.toFixed(0)}°C`, 55, 70, 80);
 
     // Status Badge
     const badge = document.getElementById("statusBadge");
@@ -593,13 +616,18 @@ function showAlerts(alerts) {
     banner.style.display = "flex";
 }
 
-// 5 quick taps anywhere on the Pi's LCD start a 10 s shutdown countdown with a CANCEL button.
+// Quick taps anywhere on the Pi's LCD:
+//   3 taps then a pause -> centre the map on the GPS position and follow it
+//   5 taps -> 10 s shutdown countdown with a CANCEL button.
 // The countdown is there because bumps can register as touches on the resistive screen.
 const TAP_COUNT = 5;
+const TAP_RECENTER_COUNT = 3;
 const TAP_WINDOW_MS = 3000;
+const TAP_SETTLE_MS = 700;  // no tap for this long ends a sequence (so 3 can't fire on the way to 5)
 const TAP_COUNTDOWN_S = 10;
 let tapTimes = [];
 let tapCountdownTimer = null;
+let tapSettleTimer = null;
 
 function initTapShutdown() {
     if (document.documentElement.classList.contains("remote")) return;  // LCD only
@@ -608,10 +636,16 @@ function initTapShutdown() {
         const now = Date.now();
         tapTimes = tapTimes.filter(t => now - t < TAP_WINDOW_MS);
         tapTimes.push(now);
+        clearTimeout(tapSettleTimer);
         if (tapTimes.length >= TAP_COUNT) {
             tapTimes = [];
             startTapShutdown();
+            return;
         }
+        tapSettleTimer = setTimeout(() => {
+            if (tapTimes.length === TAP_RECENTER_COUNT) recenterMap();
+            tapTimes = [];
+        }, TAP_SETTLE_MS);
     }, true);
 }
 

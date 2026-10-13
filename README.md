@@ -67,6 +67,8 @@ sudo reboot
 - **Clock**: the Pi has no RTC; chrony takes the time from the GPS through gpsd (shared memory unit 0) when there's no internet, and fake-hwclock restores the last known time at boot (`pi_setup/system_extras.sh`). The hardware watchdog reboots the Pi if it locks up.
 - **Drive backup**: `pi_setup/log_backup.sh` copies `logs/` to Google Drive (`JP226-GPS-Logs/<hostname>`) 10 minutes after boot and every 3 hours with rclone. LOGS on the screen shows the last backup and the next one.
 - **Alerts**: a banner over the map shows when the GPS or M5Stick stops sending (a loose USB plug), when the CPU runs hot, and when the tracker service stops answering. On the Pi there's no simulation fallback, so a missing sensor never shows made-up data; stale IMU readings are logged as blanks.
+- **Recentre**: 🎯, or 3 quick taps anywhere on the LCD (then pause).
+- **Pi health**: a strip under the header shows CPU use, RAM use and CPU temperature, coloured green → amber → red as they rise.
 - **Shutdown**: ⏻ on the LCD (with a tick-box confirm), 5 quick taps anywhere (10 s countdown with CANCEL), or automatically after 60 s at 85 °C. CSV logs include `cpu_temp_c`.
 
 The steps below are the original setup for older Pi OS releases.

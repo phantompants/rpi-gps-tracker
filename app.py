@@ -733,6 +733,8 @@ CPU_TEMP_PATH = "/sys/class/thermal/thermal_zone0/temp"
 
 system_state = {
     "cpu_temp": None,               # °C, None where there is no sensor (Windows/Mac simulation)
+    "cpu_percent": None,            # % busy across all cores, None off Linux
+    "ram_percent": None,            # % of RAM in use (MemTotal - MemAvailable), None off Linux
     "overheat_warn": False,
     "overheat_shutdown_in": None,   # seconds left while above the shutdown temperature
     "shutting_down": False,
@@ -791,6 +793,46 @@ class ThermalWatchThread(threading.Thread):
             time.sleep(5)
 
 
+class SystemStatsThread(threading.Thread):
+    """CPU and RAM use for the LCD header, from /proc every 2 s (no psutil needed)."""
+    def __init__(self):
+        super().__init__(daemon=True)
+
+    @staticmethod
+    def read_cpu_times():
+        with open("/proc/stat") as f:
+            fields = [int(x) for x in f.readline().split()[1:]]
+        idle = fields[3] + (fields[4] if len(fields) > 4 else 0)  # idle + iowait
+        return sum(fields), idle
+
+    @staticmethod
+    def read_ram_percent():
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, value = line.split(":", 1)
+                info[key] = int(value.split()[0])
+        return round(100.0 * (info["MemTotal"] - info["MemAvailable"]) / info["MemTotal"], 1)
+
+    def run(self):
+        if not os.path.exists("/proc/stat"):
+            return
+        prev_total, prev_idle = self.read_cpu_times()
+        while True:
+            time.sleep(2)
+            try:
+                total, idle = self.read_cpu_times()
+                d_total = total - prev_total
+                cpu = round(100.0 * (d_total - (idle - prev_idle)) / d_total, 1) if d_total > 0 else 0.0
+                prev_total, prev_idle = total, idle
+                ram = self.read_ram_percent()
+            except (OSError, ValueError, KeyError, ZeroDivisionError):
+                continue
+            with SYSTEM_LOCK:
+                system_state["cpu_percent"] = cpu
+                system_state["ram_percent"] = ram
+
+
 # Start Threads
 imu_thread = M5StickIMUThread()
 imu_thread.start()
@@ -800,6 +842,9 @@ gps_thread.start()
 
 thermal_thread = ThermalWatchThread()
 thermal_thread.start()
+
+stats_thread = SystemStatsThread()
+stats_thread.start()
 
 
 # REST API Routes

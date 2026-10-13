@@ -6,7 +6,7 @@
     <title>RPi 3 4WD GPS & IMU Tracker</title>
     <!-- Leaflet is served from the Pi so the page works with no internet (only the map tiles need it) -->
     <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4/leaflet.css" />
-    <link rel="stylesheet" href="/static/style.css?v=7" />
+    <link rel="stylesheet" href="/static/style.css?v=10" />
     <script>
         // Phones/remote browsers get the log & download bar at the top; the Pi LCD kiosk (localhost) keeps it at the bottom
         if (!["localhost", "127.0.0.1"].includes(location.hostname)) document.documentElement.classList.add("remote");
@@ -38,6 +38,13 @@
 
             <div class="status-badge" id="statusBadge">Initializing</div>
         </header>
+
+        <!-- Pi health: CPU load, RAM use, CPU temperature (amber/red as they climb) -->
+        <div class="sys-bar" id="sysBar">
+            <span>CPU <b id="sysCpu">--</b></span>
+            <span>RAM <b id="sysRam">--</b></span>
+            <span>TEMP <b id="sysTemp">--</b></span>
+        </div>
 
         <!-- Main Map Area -->
         <main class="map-container">
@@ -153,6 +160,6 @@
     <script src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
     <!-- Draws the offline vector map (tiles/route.pmtiles) -->
     <script src="/static/vendor/protomaps-leaflet-5.1.0/protomaps-leaflet.js"></script>
-    <script src="/static/app.js?v=7"></script>
+    <script src="/static/app.js?v=10"></script>
 </body>
 </html>
